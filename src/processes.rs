@@ -40,7 +40,9 @@ impl ProcessScanner {
             ProcessRefreshKind::nothing().with_memory(),
         );
 
-        let mut procs: Vec<_> = self.sys.processes().values().collect();
+        let mut procs: Vec<_> = self.sys.processes().values()
+            .filter(|p| p.thread_kind().is_none()) // exclude Linux threads
+            .collect();
         procs.sort_by_key(|p| std::cmp::Reverse(p.memory()));
 
         procs
