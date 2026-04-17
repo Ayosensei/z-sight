@@ -1,5 +1,6 @@
 mod alerts;
 mod logger;
+mod processes;
 mod swap;
 mod system;
 mod ui;
@@ -39,12 +40,14 @@ fn main() -> io::Result<()> {
     let mut ratio_history: VecDeque<f64> = VecDeque::with_capacity(HISTORY_LEN);
     let mut swap_entries = swap::read_entries().unwrap_or_default();
     let mut swap_totals = swap::totals(&swap_entries);
+    let mut proc_scanner = processes::ProcessScanner::new();
     let mut paused = false;
     let mut tick_count: u64 = 0;
 
     // ── Initial read (so we have data on first frame) ────────────────────────
     let mut zram_stats = zram::read_stats().unwrap_or_else(|_| fallback_zram());
     let mut ram_stats = system::read_stats(&mut sys);
+    let mut top_processes = proc_scanner.top(ram_stats.total);
     push_history(&mut usage_history, zram_stats.usage_pct);
     push_history(&mut ratio_history, zram_stats.compression_ratio);
 
@@ -62,6 +65,7 @@ fn main() -> io::Result<()> {
                         alerts: &alert_state,
                         swap_entries: &swap_entries,
                         swap_totals: &swap_totals,
+                        top_processes: &top_processes,
                         usage_history: &usage_history,
                         ratio_history: &ratio_history,
                         session_peak_pct: peak_logger.session_peak_pct(),
@@ -104,6 +108,7 @@ fn main() -> io::Result<()> {
             swap_totals = swap::totals(&entries);
             swap_entries = entries;
         }
+        top_processes = proc_scanner.top(ram_stats.total);
 
         // ── Update histories ─────────────────────────────────────────────────
         push_history(&mut usage_history, zram_stats.usage_pct);

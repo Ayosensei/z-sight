@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use crate::alerts::{AlertState, RATIO_THRESHOLD, USAGE_THRESHOLD};
+use crate::processes::ProcessInfo;
 use crate::swap::{SwapEntry, SwapTotals};
 use crate::system::RamStats;
 use crate::zram::{Health, ZramStats};
@@ -105,6 +106,7 @@ pub struct AppState<'a> {
     pub alerts: &'a AlertState,
     pub swap_entries: &'a Vec<SwapEntry>,
     pub swap_totals: &'a SwapTotals,
+    pub top_processes: &'a Vec<ProcessInfo>,
     pub usage_history: &'a VecDeque<f64>,
     pub ratio_history: &'a VecDeque<f64>,
     pub session_peak_pct: f64,
@@ -182,13 +184,21 @@ fn draw_body(f: &mut Frame, area: Rect, state: &AppState) {
 // ── Left column: ZRAM stats + Alert panel ────────────────────────────────────
 
 fn draw_left_column(f: &mut Frame, area: Rect, state: &AppState) {
+    // Process panel: border(2) + header(1) + divider(1) + TOP_N rows + spacer(1)
+    let proc_h = (2 + 1 + 1 + crate::processes::TOP_N as u16 + 1).max(9);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(9)])
+        .constraints([
+            Constraint::Min(0),         // ZRAM panel
+            Constraint::Length(9),      // Alert panel
+            Constraint::Length(proc_h), // Process leaderboard
+        ])
         .split(area);
 
     draw_zram_panel(f, rows[0], state);
     draw_alert_panel(f, rows[1], state);
+    draw_process_panel(f, rows[2], state);
 }
 
 fn draw_zram_panel(f: &mut Frame, area: Rect, state: &AppState) {
@@ -319,6 +329,110 @@ fn draw_alert_panel(f: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+// ── Process leaderboard ───────────────────────────────────────────────────────
+
+fn draw_process_panel(f: &mut Frame, area: Rect, state: &AppState) {
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "TOP PROCESSES",
+                Style::default().fg(C_BRAND).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  by RAM",
+                Style::default().fg(C_DIM),
+            ),
+            Span::raw(" "),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(C_DIM));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if state.top_processes.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "  No process data available.",
+                Style::default().fg(C_DIM),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    // Header row
+    let header = Line::from(vec![
+        Span::styled(
+            format!("  {:<2}  {:<14}  {:>8}   {:>5}", "#", "Process", "RAM", "%RAM"),
+            Style::default().fg(C_DIM).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    // Divider
+    let divider = Line::from(Span::styled(
+        "  ─────────────────────────────────────",
+        Style::default().fg(C_DIM),
+    ));
+
+    let mut rows: Vec<Constraint> = vec![
+        Constraint::Length(1), // header
+        Constraint::Length(1), // divider
+    ];
+    for _ in state.top_processes.iter() {
+        rows.push(Constraint::Length(1));
+    }
+    rows.push(Constraint::Min(0));
+
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(rows)
+        .split(inner);
+
+    f.render_widget(Paragraph::new(header), areas[0]);
+    f.render_widget(Paragraph::new(divider), areas[1]);
+
+    for (i, proc) in state.top_processes.iter().enumerate() {
+        let rank_col = match i {
+            0 => Color::Rgb(255, 215, 0),  // gold
+            1 => Color::Rgb(192, 192, 192), // silver
+            2 => Color::Rgb(205, 127, 50),  // bronze
+            _ => C_DIM,
+        };
+        let mem_col = if proc.memory_pct >= 15.0 {
+            C_CRIT
+        } else if proc.memory_pct >= 5.0 {
+            C_WARN
+        } else {
+            C_TEXT
+        };
+
+        let line = Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{:<2}", i + 1),
+                Style::default().fg(rank_col).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{:<14}", proc.name),
+                Style::default().fg(C_TEXT),
+            ),
+            Span::styled(
+                format!("{:>8}", crate::ui::fmt_bytes(proc.memory)),
+                Style::default().fg(mem_col).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {:>4.1}%", proc.memory_pct),
+                Style::default().fg(mem_col),
+            ),
+        ]);
+
+        f.render_widget(Paragraph::new(line), areas[i + 2]);
+    }
 }
 
 // ── Right column: System RAM + sparkline charts ───────────────────────────────
