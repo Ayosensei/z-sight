@@ -1,0 +1,22 @@
+[package]
+name = "z-sight"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight ZRAM monitor TUI for Linux"
+authors = ["saturnsurfer"]
+
+[[bin]]
+name = "z-sight"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+notify-rust = "4"
+sysinfo = "0.33"
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = true
+codegen-units = 1
