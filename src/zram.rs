@@ -49,6 +49,41 @@ pub fn read_u64(filename: &str) -> io::Result<u64> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+/// Parsed fields from /sys/block/zram0/mm_stat.
+/// Format: orig_data_size compr_data_size mem_used_total mem_limit mem_used_max ...
+pub struct MmStat {
+    pub orig_data_size: u64,
+    pub compr_data_size: u64,
+    pub mem_used_total: u64,
+}
+
+/// Parse the mm_stat line (modern kernels consolidate stats here).
+pub fn parse_mm_stat(line: &str) -> io::Result<MmStat> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mm_stat has fewer than 3 fields",
+        ));
+    }
+    let parse = |s: &str| {
+        s.parse::<u64>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    };
+    Ok(MmStat {
+        orig_data_size: parse(fields[0])?,
+        compr_data_size: parse(fields[1])?,
+        mem_used_total: parse(fields[2])?,
+    })
+}
+
+/// Read mm_stat from sysfs.
+fn read_mm_stat() -> io::Result<MmStat> {
+    let path = format!("{ZRAM_PATH}/mm_stat");
+    let raw = fs::read_to_string(&path)?;
+    parse_mm_stat(raw.trim())
+}
+
 /// Compute usage percentage given `mem_used_total` and `disksize`.
 pub fn calc_usage_pct(mem_used_total: u64, disksize: u64) -> f64 {
     if disksize == 0 {
@@ -77,21 +112,20 @@ pub fn classify_health(usage_pct: f64, compression_ratio: f64) -> Health {
 }
 
 /// Read all ZRAM stats from sysfs and return a populated ZramStats struct.
+/// Uses mm_stat (modern kernels) for per-field stats.
 pub fn read_stats() -> io::Result<ZramStats> {
     let disksize = read_u64("disksize")?;
-    let orig_data_size = read_u64("orig_data_size")?;
-    let compr_data_size = read_u64("compr_data_size")?;
-    let mem_used_total = read_u64("mem_used_total")?;
+    let mm = read_mm_stat()?;
 
-    let usage_pct = calc_usage_pct(mem_used_total, disksize);
-    let compression_ratio = calc_compression_ratio(orig_data_size, compr_data_size);
+    let usage_pct = calc_usage_pct(mm.mem_used_total, disksize);
+    let compression_ratio = calc_compression_ratio(mm.orig_data_size, mm.compr_data_size);
     let health = classify_health(usage_pct, compression_ratio);
 
     Ok(ZramStats {
         disksize,
-        orig_data_size,
-        compr_data_size,
-        mem_used_total,
+        orig_data_size: mm.orig_data_size,
+        compr_data_size: mm.compr_data_size,
+        mem_used_total: mm.mem_used_total,
         usage_pct,
         compression_ratio,
         health,
@@ -151,5 +185,20 @@ mod tests {
     #[test]
     fn health_critical_ratio() {
         assert_eq!(classify_health(50.0, 1.2), Health::Critical);
+    }
+
+    #[test]
+    fn parse_mm_stat_valid() {
+        // Sample line matching real kernel output
+        let line = "1825492992 601143966 614608896 0 810680320 38614 1029435 26721 475378";
+        let s = parse_mm_stat(line).unwrap();
+        assert_eq!(s.orig_data_size, 1_825_492_992);
+        assert_eq!(s.compr_data_size, 601_143_966);
+        assert_eq!(s.mem_used_total, 614_608_896);
+    }
+
+    #[test]
+    fn parse_mm_stat_too_short() {
+        assert!(parse_mm_stat("100 200").is_err());
     }
 }
