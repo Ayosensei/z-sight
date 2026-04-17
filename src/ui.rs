@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use crate::alerts::{AlertState, RATIO_THRESHOLD, USAGE_THRESHOLD};
+use crate::swap::{SwapEntry, SwapTotals};
 use crate::system::RamStats;
 use crate::zram::{Health, ZramStats};
 
@@ -102,6 +103,8 @@ pub struct AppState<'a> {
     pub zram: &'a ZramStats,
     pub ram: &'a RamStats,
     pub alerts: &'a AlertState,
+    pub swap_entries: &'a Vec<SwapEntry>,
+    pub swap_totals: &'a SwapTotals,
     pub usage_history: &'a VecDeque<f64>,
     pub ratio_history: &'a VecDeque<f64>,
     pub session_peak_pct: f64,
@@ -321,16 +324,21 @@ fn draw_alert_panel(f: &mut Frame, area: Rect, state: &AppState) {
 // ── Right column: System RAM + sparkline charts ───────────────────────────────
 
 fn draw_right_column(f: &mut Frame, area: Rect, state: &AppState) {
+    // Height for swap panel: 2 (border+title) + 1 (spacer) + entries × 3 (label+gauge+spacer) + 1 (total line)
+    let swap_h = (2 + 1 + state.swap_entries.len() as u16 * 3 + 2).max(6);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // System RAM panel
-            Constraint::Min(0),     // Charts (split 50/50)
+            Constraint::Length(8),         // System RAM panel
+            Constraint::Length(swap_h),    // Swap devices panel
+            Constraint::Min(0),            // Sparkline charts
         ])
         .split(area);
 
     draw_system_ram_panel(f, rows[0], state);
-    draw_charts(f, rows[1], state);
+    draw_swap_panel(f, rows[1], state);
+    draw_charts(f, rows[2], state);
 }
 
 fn draw_system_ram_panel(f: &mut Frame, area: Rect, state: &AppState) {
@@ -389,6 +397,116 @@ fn draw_system_ram_panel(f: &mut Frame, area: Rect, state: &AppState) {
         ]),
     ];
     f.render_widget(Paragraph::new(stats), rows[3]);
+}
+
+// ── Swap devices panel ────────────────────────────────────────────────────────
+
+fn draw_swap_panel(f: &mut Frame, area: Rect, state: &AppState) {
+    let totals = state.swap_totals;
+    let total_col = pct_color(totals.used_pct, 60.0, 80.0);
+
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "SWAP DEVICES",
+                Style::default().fg(C_BRAND).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!(
+                    "total {:.1}%  ({} / {})",
+                    totals.used_pct,
+                    fmt_bytes(totals.total_used),
+                    fmt_bytes(totals.total_size)
+                ),
+                Style::default().fg(total_col),
+            ),
+            Span::raw(" "),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(C_BRAND));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if state.swap_entries.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "  No active swap devices found.",
+                Style::default().fg(C_DIM),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    // One row group per entry: [label row] + [gauge row] + [spacer]
+    let entry_count = state.swap_entries.len();
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for _ in 0..entry_count {
+        constraints.push(Constraint::Length(1)); // label
+        constraints.push(Constraint::Length(2)); // gauge
+        constraints.push(Constraint::Length(1)); // gap
+    }
+    constraints.push(Constraint::Min(0)); // absorb leftover
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    for (i, entry) in state.swap_entries.iter().enumerate() {
+        let label_idx = i * 3;
+        let gauge_idx = label_idx + 1;
+
+        let col = pct_color(entry.used_pct, 60.0, 80.0);
+        let kind_label = if entry.kind == "partition" { "partition" } else { "file     " };
+        let prio_str = if entry.priority >= 0 {
+            format!("prio +{}", entry.priority)
+        } else {
+            format!("prio {}", entry.priority)
+        };
+
+        // Label row: name  [type]  prio N
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    format!("{:<16}", entry.display_name),
+                    Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[{kind_label}]"),
+                    Style::default().fg(C_DIM),
+                ),
+                Span::styled(
+                    format!("  {prio_str}"),
+                    Style::default().fg(C_DIM),
+                ),
+            ])),
+            rows[label_idx],
+        );
+
+        // Gauge row
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::NONE))
+            .gauge_style(
+                Style::default()
+                    .fg(col)
+                    .bg(Color::Rgb(40, 40, 55))
+                    .add_modifier(Modifier::BOLD),
+            )
+            .percent(entry.used_pct.clamp(0.0, 100.0) as u16)
+            .label(format!(
+                "{:.1}%  ({} / {})",
+                entry.used_pct,
+                fmt_bytes(entry.used),
+                fmt_bytes(entry.size),
+            ));
+        f.render_widget(gauge, rows[gauge_idx]);
+    }
 }
 
 fn draw_charts(f: &mut Frame, area: Rect, state: &AppState) {

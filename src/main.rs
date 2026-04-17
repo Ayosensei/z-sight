@@ -1,5 +1,6 @@
 mod alerts;
 mod logger;
+mod swap;
 mod system;
 mod ui;
 mod zram;
@@ -36,6 +37,8 @@ fn main() -> io::Result<()> {
     let mut peak_logger = logger::PeakLogger::new()?;
     let mut usage_history: VecDeque<f64> = VecDeque::with_capacity(HISTORY_LEN);
     let mut ratio_history: VecDeque<f64> = VecDeque::with_capacity(HISTORY_LEN);
+    let mut swap_entries = swap::read_entries().unwrap_or_default();
+    let mut swap_totals = swap::totals(&swap_entries);
     let mut paused = false;
     let mut tick_count: u64 = 0;
 
@@ -57,6 +60,8 @@ fn main() -> io::Result<()> {
                         zram: &zram_stats,
                         ram: &ram_stats,
                         alerts: &alert_state,
+                        swap_entries: &swap_entries,
+                        swap_totals: &swap_totals,
                         usage_history: &usage_history,
                         ratio_history: &ratio_history,
                         session_peak_pct: peak_logger.session_peak_pct(),
@@ -91,15 +96,14 @@ fn main() -> io::Result<()> {
         tick_count += 1;
 
         // ── Refresh data ─────────────────────────────────────────────────────
-        match zram::read_stats() {
-            Ok(stats) => {
-                zram_stats = stats;
-            }
-            Err(_) => {
-                // Keep last good read on transient sysfs error
-            }
+        if let Ok(stats) = zram::read_stats() {
+            zram_stats = stats;
         }
         ram_stats = system::read_stats(&mut sys);
+        if let Ok(entries) = swap::read_entries() {
+            swap_totals = swap::totals(&entries);
+            swap_entries = entries;
+        }
 
         // ── Update histories ─────────────────────────────────────────────────
         push_history(&mut usage_history, zram_stats.usage_pct);
